@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Memory Assistant</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">◆</span>
+        <span>AI Memory Assistant</span>
+      </div>
+      <button id="new-chat" class="new-chat">＋ New chat</button>
+      <div class="mode-card">
+        <div class="mode-row">
+          <span class="dot" id="mode-dot"></span>
+          <span id="mode-label">DETECTING…</span>
+        </div>
+        <div class="mode-detail" id="mode-detail">checking connectivity…</div>
+      </div>
+      <div class="sidebar-footer">
+        <div id="engine-info">engine: –</div>
+        <div id="memory-info">memory: –</div>
+        <button id="memory-toggle" class="memory-toggle">🧠 Memory browser</button>
+      </div>
+    </aside>
+
+    <main class="chat">
+      <header class="chat-header">
+        <span class="chat-title" id="chat-title">New chat</span>
+        <span class="badge" id="mode-badge">…</span>
+      </header>
+
+      <div class="messages" id="messages">
+        <div class="welcome">
+          <h1>AI Memory Assistant</h1>
+          <p>Works online via OpenRouter and fully offline via a local model.</p>
+          <p class="hint">The badge in the corner always shows the active mode.</p>
+        </div>
+      </div>
+
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Message the assistant…" autofocus></textarea>
+        <button type="submit" id="send" aria-label="Send">➤</button>
+      </form>
+    </main>
+  </div>
+
+  <div class="memory-panel hidden" id="memory-panel">
+    <div class="memory-panel-header">
+      <span>🧠 Stored memories</span>
+      <div class="memory-actions">
+        <button id="memory-sync" title="Push offline memories to Qdrant">⟳ Sync</button>
+        <button id="memory-clear" class="danger" title="Delete ALL memories">Clear all</button>
+        <button id="memory-close">✕</button>
+      </div>
+    </div>
+    <div class="memory-stats" id="memory-stats">–</div>
+    <div class="memory-list" id="memory-list"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

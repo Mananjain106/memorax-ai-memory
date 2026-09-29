@@ -1,0 +1,24 @@
+# secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# dependencies
+node_modules/
+
+# local model cache (downloaded weights, can be re-fetched)
+models/
+
+# local vector memory store (user data)
+data/
+
+# logs & OS junk
+*.log
+server.pid
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# build artifacts
+dist/
+build/
