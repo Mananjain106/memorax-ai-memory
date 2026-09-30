@@ -81,4 +81,13 @@ function currentMode() {
   };
 }
 
-module.exports = { detectMode, currentMode };
+// Strict-routing state (ONLINE | OFFLINE | UNKNOWN). The probe is a lightweight
+// HTTP reachability check — never an AI request — so resolving UNKNOWN costs
+// nothing and never consumes provider quota.
+function connState() {
+  if (state.online === true) return 'ONLINE';
+  if (state.online === false) return 'OFFLINE';
+  return 'UNKNOWN';
+}
+
+module.exports = { detectMode, currentMode, connState };

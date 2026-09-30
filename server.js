@@ -25,7 +25,7 @@ app.use((req, res) => {
 });
 
 app.listen(config.port, async () => {
-  console.log(`AI Memory Assistant running at http://localhost:${config.port}`);
+  console.log(`MemoraX running at http://localhost:${config.port}`);
   detectMode().then((c) => console.log(`[connectivity] ${c.online ? 'ONLINE' : 'OFFLINE'} (${c.reason})`));
   memory.ensureCollection().catch((e) => console.warn(`[memory] qdrant unavailable: ${e.message}`));
   // Push locally-stored memories that never reached Qdrant (offline catch-up).

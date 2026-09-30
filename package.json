@@ -1,8 +1,8 @@
 {
-  "name": "ai-memory-assistant",
-  "version": "0.2.0",
+  "name": "memorax",
+  "version": "0.3.0",
   "private": true,
-  "description": "Offline-first ChatGPT-like AI memory assistant. ONLINE: OpenRouter + Qdrant Cloud. OFFLINE: real local LLM inference (transformers.js / Ollama).",
+  "description": "MemoraX — Your AI. Your Memory. Anywhere. Offline-first AI with intelligent memory. ONLINE: OpenRouter + Qdrant Cloud. OFFLINE: real local LLM inference (transformers.js / Ollama).",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

@@ -53,6 +53,50 @@ test('priority bands map to correct decisions', () => {
   assert.strictEqual(engine.decidePriorityBand(100), 'LOCAL_AND_CLOUD');
 });
 
+// ---------- unit: cross-device promotion ----------
+test('cross-device promotion: high cross_device_value upgrades 50-74 band to LOCAL_AND_CLOUD', () => {
+  const base = { importance: 60, future_usefulness: 60, frequency: 40, recency: 60, sensitivity: 10, confidence: 80 };
+  // crafted so computePriority lands in the 50-74 band without the rule
+  const scores = { ...base, cross_device_value: 30 };
+  const plain = engine.decide(scores, { text: 'The user deploys the Atlas project on Kubernetes.' }, []);
+  assert.strictEqual(plain.decision, 'LOCAL_ONLY', `precondition failed: ${plain.decision}`);
+  assert.ok(plain.priority >= 50 && plain.priority < 75, `precondition failed: priority ${plain.priority}`);
+
+  const sameButShared = { ...scores, cross_device_value: 80 };
+  const promoted = engine.decide(sameButShared, { text: 'The user deploys the Atlas project on Kubernetes.' }, []);
+  assert.strictEqual(promoted.decision, 'LOCAL_AND_CLOUD');
+  assert.ok(
+    promoted.priority >= 50 && promoted.priority < 75,
+    `promotion must stay a band upgrade, got priority ${promoted.priority}`
+  );
+  assert.ok(/promoted/.test(promoted.reason));
+});
+
+test('cross-device promotion: does not fire below 50 or at/above 75', () => {
+  const low = { importance: 20, future_usefulness: 20, frequency: 20, recency: 30, cross_device_value: 100, sensitivity: 10, confidence: 80 };
+  const lowDec = engine.decide(low, { text: 'x' }, []);
+  assert.notStrictEqual(lowDec.decision, 'LOCAL_AND_CLOUD', 'weak overall signal must not promote');
+
+  const alreadyCloud = { importance: 95, future_usefulness: 95, frequency: 70, recency: 90, cross_device_value: 90, sensitivity: 10, confidence: 90 };
+  const d = engine.decide(alreadyCloud, { text: 'x' }, []);
+  assert.strictEqual(d.decision, 'LOCAL_AND_CLOUD');
+  assert.ok(!/promoted/.test(d.reason), 'band-native LOCAL_AND_CLOUD needs no promotion note');
+});
+
+test('cross-device promotion: security override and duplicates still win', () => {
+  const scores = { importance: 60, future_usefulness: 60, frequency: 40, recency: 60, cross_device_value: 90, sensitivity: 10, confidence: 80 };
+  const secret = engine.decide(scores, { text: 'my api key is sk-or-v1-aaaabbbbccccdddd1111' }, []);
+  assert.strictEqual(secret.decision, 'LOCAL_ONLY');
+  assert.ok(secret.securityOverride, 'promotion must never override the security gate');
+
+  const dup = engine.decide(scores, { text: 'The user uses Vue' }, [{ id: 'd1', score: 0.9, text: 'The user uses Vue' }]);
+  assert.strictEqual(dup.decision, 'MERGE', 'promotion must not bypass duplicate handling');
+
+  const sens = engine.decide({ ...scores, sensitivity: 85 }, { text: 'The user keeps notes in the vault' }, []);
+  assert.strictEqual(sens.decision, 'LOCAL_ONLY');
+  assert.ok(sens.securityOverride);
+});
+
 // ---------- unit: secret detection ----------
 test('never store: secret patterns are detected', () => {
   const secrets = [

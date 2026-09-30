@@ -97,13 +97,14 @@ async function testOnline() {
         }),
       })
     ).json();
-    // The daily free tier can be exhausted (HTTP 429); degrading to the local
-    // model is correct, working behavior — the endpoint must still answer.
+    // STRICT ROUTING: online means OpenRouter ONLY. Provider failures (daily
+    // free-tier 429 included) surface as ONLINE_PROVIDER_ERROR — the local LLM
+    // must never substitute while online.
     log(
-      'online chat via OpenRouter (or degraded fallback)',
-      c.content && ['ONLINE', 'ONLINE_DEGRADED'].includes(c.mode) &&
-        ((c.engine === 'openrouter') || (c.engine === 'local-fallback' && /429|quota|rate/i.test(c.note || ''))),
-      `engine=${c.engine} mode=${c.mode} answer="${String(c.content).slice(0, 50)}"`
+      'online chat via OpenRouter (strict: no local fallback)',
+      (c.mode === 'ONLINE' && c.engine === 'openrouter' && c.content) ||
+        (c.mode === 'ONLINE_PROVIDER_ERROR' && c.engine === 'openrouter' && !c.content),
+      `engine=${c.engine} mode=${c.mode} answer="${String(c.content || c.error).slice(0, 60)}"`
     );
 
     // --- streaming (online) ---
@@ -111,15 +112,22 @@ async function testOnline() {
     const meta = events.find((e) => e.event === 'meta');
     const deltas = events.filter((e) => e.event === 'delta');
     const done = events.find((e) => e.event === 'done');
-    const degradedStream = meta?.data?.engine === 'local-fallback';
+    const providerError = events.find((e) => e.event === 'error');
+    // Strict routing: either OpenRouter streamed (meta+deltas+done) or the
+    // provider error was surfaced WITHOUT any local-LLM substitution (a
+    // pre-stream provider error emits only the error event).
     log(
-      'stream: meta+deltas+done (online)',
-      Boolean(meta) && deltas.length >= 1 && Boolean(done) &&
-        (meta.data.engine === 'openrouter' || degradedStream),
-      `deltas=${deltas.length} engine=${meta?.data?.engine}${degradedStream ? ' (provider quota exhausted)' : ''}`
+      'stream: strict provider routing (openrouter answers OR provider error)',
+      (Boolean(meta) && meta.data.engine === 'openrouter' && deltas.length >= 1 && Boolean(done)) ||
+        (!meta && Boolean(providerError)),
+      `deltas=${deltas.length} engine=${meta?.data?.engine || 'openrouter'}${providerError ? ' (provider error surfaced, no local fallback)' : ''}`
     );
     const answer = deltas.map((d) => d.data.text).join('');
-    log('stream: answer non-trivial', answer.trim().length > 3, `answer="${answer.slice(0, 50)}"`);
+    log(
+      'stream: answer non-trivial (when provider answered)',
+      providerError ? true : answer.trim().length > 3,
+      providerError ? 'skipped: provider error path taken' : `answer="${answer.slice(0, 50)}"`
+    );
 
     // --- memory round-trip via API ---
     const marker = `test-marker-${Date.now()}`;

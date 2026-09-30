@@ -15,6 +15,7 @@ const syncQueue = require('./sync-queue');
 const schema = require('../memory-engine/schema');
 const vectorSearch = require('../memory-engine/vector-search');
 const { EVENT } = require('./sync-queue');
+const perf = require('./perf');
 
 let client = null;
 let memoryDisabledReason = null;
@@ -98,33 +99,110 @@ async function ensureCollection() {
   return { created: true, vectorSize };
 }
 
+// PHASE 6 of the sync-integrity spec: vector dim must match the cloud
+// collection EXACTLY. Never guess, never silently pad — a mismatch must fail
+// the sync clearly instead of producing a degraded or rejected write.
 async function fitToCollectionDim(vec) {
   await ensureDim();
   if (vec.length === vectorSize) return vec;
-  if (vec.length > vectorSize) {
-    throw new Error(`embedding dim ${vec.length} exceeds collection dim ${vectorSize}`);
-  }
-  // Pad with zeros: cos(pad(a), pad(b)) === cos(a, b) exactly, so recall
-  // quality is unchanged. Never guess dimensions — fit to reality.
-  const padded = vec.slice();
-  padded.length = vectorSize;
-  return padded.fill(0, vec.length);
+  const err = new Error(`Vector dimension mismatch: embedding=${vec.length} collection=${vectorSize}`);
+  err.permanent = true; // retrying cannot fix a dim mismatch
+  throw err;
 }
 
-// Push one point to Qdrant (best-effort). Marks the local copy synced on success.
+// Deterministic point identity (spec §4): the Qdrant point id IS the memory_id
+// (a UUID minted once at memory-creation time and stored locally forever).
+// Retries therefore overwrite the same cloud point instead of duplicating it.
+function validatePointId(id) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id));
+}
+
+// Spec §7: after upsert, the retrieved cloud payload must match the local
+// record on the fields that define identity. Returns a mismatch description
+// or null when everything matches.
+function payloadMismatch(localPayload, cloudPayload) {
+  if (!cloudPayload) return 'cloud payload missing';
+  const checks = [
+    ['memory_id', localPayload.memory_id, cloudPayload.memory_id],
+    ['text', localPayload.text, cloudPayload.text],
+    ['version', localPayload.version, cloudPayload.version],
+    ['content_hash', localPayload.content_hash, cloudPayload.content_hash],
+  ];
+  for (const [field, localV, cloudV] of checks) {
+    if (String(localV) !== String(cloudV)) {
+      return `payload.${field} mismatch (local=${JSON.stringify(String(localV).slice(0, 40))} cloud=${JSON.stringify(String(cloudV).slice(0, 40))})`;
+    }
+  }
+  return null;
+}
+
+// Push one point to Qdrant Cloud with PROOF of success. A memory is only
+// reported synced when: (1) the upsert response explicitly says ok, AND
+// (2) the point is retrieved back from the expected collection and its
+// payload fields match. Anything else returns {ok:false} — never a silent
+// "SYNCED" (sync-integrity spec §§2,3,15).
 async function pushPoint(id, vecNative, payload) {
+  const tag = `memory=${id}`;
   try {
-    const vector = await fitToCollectionDim(vecNative);
+    if (!config.qdrant.url || !config.qdrant.collection) {
+      throw new Error('not configured: QDRANT_URL / QDRANT_COLLECTION missing');
+    }
+    if (!validatePointId(id)) {
+      const err = new Error(`invalid point id "${String(id).slice(0, 36)}" — point id must be the deterministic memory_id UUID`);
+      err.permanent = true;
+      throw err;
+    }
+    console.log(`[SYNC] START ${tag} collection=${config.qdrant.collection}`);
+    const vector = await fitToCollectionDim(vecNative); // hard dim check (§6)
     const vectorArg = vectorName ? { [vectorName]: vector } : vector;
-    await getClient().upsert(config.qdrant.collection, {
+
+    console.log(`[SYNC] QDRANT_UPSERT_STARTED ${tag}`);
+    const t0 = Date.now();
+    const resp = await getClient().upsert(config.qdrant.collection, {
       points: [{ id, vector: vectorArg, payload }],
       wait: true,
     });
+    // §2: the client resolves on any HTTP answer — inspect the REAL response.
+    // Qdrant Cloud upserts answer { status: 'ok' | 'completed', result: ...
+    // { operation_id, status: 'completed' } } depending on API version. HTTP
+    // 4xx/5xx already threw above; any OTHER envelope is NOT confirmed. The
+    // decisive proof is still the post-upsert retrieve below.
+    const opStatus = String(resp?.status ?? '');
+    if (opStatus !== 'ok' && opStatus !== 'completed') {
+      throw new Error(
+        `Qdrant upsert not confirmed: status=${JSON.stringify(resp?.status ?? null)} result=${JSON.stringify(resp?.result ?? resp).slice(0, 140)}`
+      );
+    }
+    console.log(`[SYNC] QDRANT_UPSERT_SUCCESS ${tag} took=${Date.now() - t0}ms op=${JSON.stringify(resp.status)}`);
+
+    // §3: post-upsert verification — the write only counts when the point
+    // exists in the EXPECTED collection with the EXPECTED payload.
+    console.log(`[SYNC] CLOUD_VERIFICATION_STARTED ${tag}`);
+    const got = await getClient().retrieve(config.qdrant.collection, {
+      ids: [id],
+      with_payload: true,
+    });
+    const point = Array.isArray(got) ? got[0] : null;
+    if (!point) {
+      throw new Error('cloud verification failed: point not found in collection immediately after upsert');
+    }
+    const mismatch = payloadMismatch(payload, point.payload);
+    if (mismatch) {
+      throw new Error(`cloud verification failed: ${mismatch}`);
+    }
+    console.log(`[SYNC] CLOUD_VERIFICATION_SUCCESS ${tag} (point exists, payload matches)`);
+
     localStore.markSynced(id);
-    return { ok: true };
+    memoryDisabledReason = null; // a verified push clears any stale cloud error
+    return { ok: true, verified: true };
   } catch (e) {
     memoryDisabledReason = e.message;
-    return { ok: false, error: e.message };
+    console.log(`[SYNC] QDRANT_UPSERT_FAILED ${tag} error=${JSON.stringify(String(e.message || e).slice(0, 180))}`);
+    return {
+      ok: false,
+      error: e.message,
+      permanent: Boolean(e.permanent) || /not configured|dimension mismatch/i.test(String(e.message || '')),
+    };
   }
 }
 
@@ -149,9 +227,18 @@ async function remember(text, metadata = {}, { cloudAllowed = true, record: prov
 
     // 2. Cloud path: direct push when online, else (or if push fails) the
     //    persistent queue holds it for automatic catch-up with backoff.
-    //    Sensitive memories never enqueue — the queue itself enforces this.
-    if (!cloudAllowed) {
-      return { ok: true, id, record, dims: vec.length, qdrant: { ok: true, skipped: true, queued: false } };
+    //    Sensitive (LOCAL_ONLY) memories never leave the device — enforced on
+    //    BOTH paths: the queue refuses them at enqueue, and the direct push
+    //    is refused here (defense in depth: bypassing the queue must not
+    //    bypass the gate).
+    if (!cloudAllowed || syncQueue.isSensitivePayload(payload)) {
+      return {
+        ok: true,
+        id,
+        record,
+        dims: vec.length,
+        qdrant: { ok: true, skipped: true, queued: false, reason: !cloudAllowed ? 'LOCAL_ONLY' : 'SENSITIVE' },
+      };
     }
     const qdrant = await pushPoint(id, vec, payload);
     if (!qdrant.ok) {
@@ -185,7 +272,7 @@ async function updatePoint(id, { text, ...fieldUpdates } = {}) {
     if (existing.synced) {
       cloud = await pushPoint(id, vec, updated);
       if (!cloud.ok) syncQueue.enqueue(id, 'UPSERT', { payload: updated, priority: updated.priority_score });
-    } else if (!syncQueue.isSensitivePayload(updated)) {
+    } else if (updated.decision !== 'LOCAL_ONLY' && !syncQueue.isSensitivePayload(updated)) {
       syncQueue.enqueue(id, 'UPSERT', { payload: updated, priority: updated.priority_score });
     }
     return { ok: true, id, record: updated, cloud };
@@ -231,8 +318,14 @@ function purgeExpiredTemporary(maxAgeMs = 24 * 60 * 60 * 1000) {
   return removed;
 }
 
-async function recall(query, limit = 3) {
+// Dual-source recall: cloud (when online) + local store, merged and ranked.
+// PHASE 4: results are capped at top-K and filtered by a relevance floor so
+// weakly-related memories never pollute the LLM prompt. With no sufficiently
+// relevant memory, returns [] — the assistant is NOT forced unrelated context.
+async function recall(query, limit = 3, { minRelevance = 0.15 } = {}) {
+  const p = perf.stage();
   const qv = await embed(query);
+  p.lap('embedding');
   const conn = await detectMode().catch(() => ({ online: false }));
   const merged = new Map(); // id -> result (cloud and local share ids)
 
@@ -291,7 +384,38 @@ async function recall(query, limit = 3) {
   return [...merged.values()]
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .filter((r) => r.score > 0.05);
+    .filter((r) => r.score > 0.05)
+    // PHASE 4 relevance floor: below this cosine similarity a memory is more
+    // likely noise than context (MiniLM cosine 0.2 ≈ topically loose).
+    .filter((r) => r.score >= minRelevance);
+}
+
+// Edge-only recall for the ANSWER path (PHASE 2/4): never waits on Qdrant
+// Cloud. The local store holds everything synced from this device plus
+// LOCAL_ONLY memories, and the background sync keeps it fed with other-device
+// memories — so the answer path loses effectively nothing while dropping the
+// per-message cloud round-trip. The dual-source recall() above remains for the
+// explicit /api/memory/recall endpoint, which CAN afford to wait.
+async function recallLocalOnly(query, limit = 5, { minRelevance = 0.15 } = {}) {
+  const p = perf.stage();
+  const qv = await embed(query);
+  p.lap('embedding');
+  let hits;
+  try {
+    hits = await vectorSearch.searchLocal(qv, { limit });
+  } catch {
+    hits = localStore.search(qv, limit).map((r) => ({
+      memory_id: r.id,
+      score: r.score,
+      text: r.text,
+      payload: r.payload,
+      source: 'local',
+    }));
+  }
+  p.lap('memory search');
+  return hits
+    .filter((r) => r.score > 0.05 && r.score >= minRelevance)
+    .slice(0, limit);
 }
 
 // Synchronize: delegate to the cloud-sync worker, which drains the persistent
@@ -299,16 +423,22 @@ async function recall(query, limit = 3) {
 // points that predate the queue and are cloud-eligible.
 async function syncPending() {
   const cloudSync = require('./cloud-sync');
+  const p = perf.stage();
   // legacy catch-up: local points never synced and not in the queue yet
   const legacy = localStore.pending();
   for (const p of legacy) {
     const payload = p.payload || {};
+    // LOCAL_ONLY was an explicit Decision Engine verdict — the catch-up sweep
+    // must not quietly promote it to the cloud behind the engine's back.
+    if (payload.decision === 'LOCAL_ONLY') continue;
     if (!syncQueue.get(p.id) && !syncQueue.isSensitivePayload(payload)) {
       syncQueue.enqueue(p.id, 'UPSERT', { payload, priority: payload.priority_score });
     }
   }
   const summary = await cloudSync.syncNow();
   if (!summary.skipped && !summary.offline) {
+    p.lap('cloud sync');
+    p.total('sync round');
     console.log(
       `[memory] sync: ${summary.synced} synced, ${summary.deduped} deduped, ${summary.conflicts} conflicts, ${summary.failed} failed`
     );
@@ -381,11 +511,13 @@ module.exports = {
   ensureCollection,
   remember,
   recall,
+  recallLocalOnly,
   updatePoint,
   flagConflict,
   purgeExpiredTemporary,
   syncPending,
   pushPoint,
+  payloadMismatch,
   fitToCollectionDim,
   listPoints,
   deletePoint,

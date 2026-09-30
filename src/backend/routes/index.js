@@ -146,6 +146,60 @@ router.post('/api/memory/analyze', async (req, res) => {
 const syncQueue = require('../services/sync-queue');
 const conflictsMod = require('../memory-engine/conflicts');
 
+// Aggregated Edge Memory status for the UI popover (read-only).
+// `?deep=1` additionally pings Qdrant (collectionExists) for a live cloud check;
+// the cheap poll path relies on cached connectivity + last known push errors.
+router.get('/api/memory/edge-status', async (req, res) => {
+  try {
+    const conn = await detectMode();
+    const qCounts = syncQueue.counts();
+    const mem = memory.status();
+    let reachable = null; // null = unknown (shallow poll)
+    if (req.query.deep === '1') {
+      try {
+        if (!conn.online || !mem.configured) throw new Error('offline or not configured');
+        await memory.ensureCollection();
+        reachable = true;
+      } catch {
+        reachable = false;
+      }
+    }
+    // Last successful cloud sync from the activity log (newest at the end).
+    let lastSyncAt = null;
+    try {
+      const events = syncQueue.readActivity(500);
+      for (let i = events.length - 1; i >= 0; i--) {
+        if (events[i].event === syncQueue.EVENT.SYNCED) {
+          lastSyncAt = events[i].ts;
+          break;
+        }
+      }
+    } catch {}
+    res.json({
+      ok: true,
+      online: Boolean(conn.online),
+      mode: conn.online ? 'ONLINE' : 'OFFLINE',
+      localMemory: {
+        active: true,
+        count: mem.local.count,
+        pending: mem.local.pending,
+      },
+      queue: qCounts,
+      pendingSync: (qCounts.PENDING || 0) + (qCounts.SYNCING || 0),
+      cloud: {
+        configured: mem.configured,
+        connected: Boolean(conn.online && mem.configured && (reachable === true || (reachable === null && !mem.disabledReason))),
+        reachable,
+        reason: mem.disabledReason || null,
+      },
+      openConflicts: conflictsMod.list({ status: 'REQUIRES_REVIEW' }).length,
+      lastSyncAt,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.get('/api/sync/queue', (req, res) => {
   res.json({ counts: syncQueue.counts(), items: syncQueue.all() });
 });

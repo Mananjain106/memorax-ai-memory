@@ -128,6 +128,7 @@ async function executeDecision(analysis, decision, candidate, duplicates) {
         priority_score: decision.priority,
         priority: decision.priority,
         source: analysis.source,
+        decision: decision.decision, // explicit marker: the legacy catch-up sweep respects LOCAL_ONLY
         reason: decision.reason,
       };
       // Cloud targeting: LOCAL_ONLY stays on the device (security override),
@@ -194,15 +195,27 @@ function dupConflictId(duplicates) {
 
 // Main entry: analyze -> dedup -> decide -> execute -> audit.
 // Fully instrumented; every failure surfaces as MEMORY_ERROR, never silence.
-async function processMessage(userMessage, { source = 'chat' } = {}) {
+//   offline  — STRICT ROUTING: never any LLM call (local heuristic analyzer)
+//   skipLLM  — the online provider just failed (e.g. 429): analyze locally
+//              instead of spending another OpenRouter request on this message.
+async function processMessage(userMessage, { source = 'chat', offline = false, skipLLM = false } = {}) {
   const t0 = Date.now();
   slog('PIPELINE_START', { source });
   try {
     // ---- 1. candidate extraction + scoring (LLM or deterministic fallback) ----
+    // STRICT ROUTING: offline means NO OpenRouter calls anywhere — the
+    // analyzer included. The deterministic heuristic scorer is used directly.
     let analysis;
     try {
       const tA = Date.now();
-      analysis = await analyzer.analyzeMessage(userMessage, { llmChat: llmChatFn });
+      if (offline || skipLLM) {
+        // No LLM anywhere: offline routing, or the provider just failed for
+        // this very message (quota/429) — never spend another request on it.
+        analysis = analyzer.heuristicAnalyze(userMessage);
+        analysis.reason += offline ? ' (offline: local heuristic analysis)' : ' (provider unavailable: local heuristic analysis)';
+      } else {
+        analysis = await analyzer.analyzeMessage(userMessage, { llmChat: llmChatFn });
+      }
       slog(analysis.extract ? 'CANDIDATE_FOUND' : 'NO_CANDIDATE', {
         analyzer: analysis.source,
         ms: Date.now() - tA,

@@ -28,6 +28,7 @@ async function* sseLines(body) {
 
 async function* openRouterStream(model, messages, { signal } = {}) {
   const config = require('../config');
+  console.log(`[OPENROUTER] request started model=${model} (stream)`);
   const res = await fetch(`${config.openrouter.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -41,8 +42,13 @@ async function* openRouterStream(model, messages, { signal } = {}) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    console.log(`[OPENROUTER] HTTP ${res.status} model=${model} (stream) ${JSON.stringify(text.slice(0, 120))}`);
     const err = new Error(`OpenRouter HTTP ${res.status}: ${text.slice(0, 300)}`);
     err.status = res.status;
+    const retryAfterSec = Number(res.headers.get('retry-after'));
+    if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) {
+      err.retryAfterSec = retryAfterSec; // server-provided: never invent a delay
+    }
     throw err;
   }
   for await (const data of sseLines(res.body)) {

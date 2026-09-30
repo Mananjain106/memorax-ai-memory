@@ -107,14 +107,18 @@ function enqueue(memoryId, operation = 'UPSERT', { payload, priority } = {}) {
     });
     return { ok: false, reason: 'SENSITIVE' };
   }
-  const existing = queue.items.find((i) => i.memory_id === memoryId && i.status !== STATUS.SYNCED);
+  // ONE queue slot per memory_id (§4/§14): re-enqueueing a SYNCED memory
+  // REUSES its slot (back to PENDING) instead of creating a second record —
+  // duplicate slots would linger PENDING forever because markSynced/markFailed
+  // resolve the first item for a memory_id.
+  const existing = queue.items.find((i) => i.memory_id === memoryId);
   if (existing) {
-    // same memory already waiting: refresh op/payload, keep retry history
+    // same memory already tracked: refresh op/payload, keep retry history
     existing.operation = operation;
     if (payload) existing.payload = payload;
-    if (existing.status === STATUS.FAILED || existing.status === STATUS.CONFLICT) {
-      existing.status = STATUS.PENDING; // new data, try again
-    }
+    existing.status = STATUS.PENDING; // SYNCED/FAILED/CONFLICT -> fresh attempt
+    existing.retry_count = 0;
+    existing.next_attempt_after = null;
     existing.last_error = null;
     persist();
     return { ok: true, dedup: true, queue_id: existing.queue_id };
@@ -161,15 +165,35 @@ function pendingCount() {
   return queue.items.filter((i) => i.status === STATUS.PENDING).length;
 }
 
+// Spec §8: explicit SYNCING stage. Set by the sync worker right before the
+// cloud attempt; crash recovery (init) flips stranded SYNCING back to PENDING.
+function markSyncing(memoryId) {
+  init();
+  // mark ALL slots for this memory (legacy files may hold duplicates)
+  const items = queue.items.filter((i) => i.memory_id === memoryId);
+  for (const item of items) {
+    if (item.status !== STATUS.SYNCING) {
+      item.status = STATUS.SYNCING;
+      item.last_attempt = Date.now();
+    }
+  }
+  if (items.length) persist();
+  console.log(`[SYNC] QUEUE_STATUS=SYNCING memory=${memoryId}`);
+  return items[0] || null;
+}
+
 function markSynced(memoryId) {
   init();
-  const item = queue.items.find((i) => i.memory_id === memoryId);
-  if (item) {
+  const items = queue.items.filter((i) => i.memory_id === memoryId);
+  for (const item of items) {
     item.status = STATUS.SYNCED;
     item.last_attempt = Date.now();
     item.last_error = null;
+  }
+  if (items.length) {
     persist();
-    logActivity(EVENT.SYNCED, { memory_id: memoryId, queue_id: item.queue_id });
+    logActivity(EVENT.SYNCED, { memory_id: memoryId, queue_id: items[0].queue_id });
+    console.log(`[SYNC] QUEUE_STATUS=SYNCED memory=${memoryId} (cloud write confirmed + verified)`);
   }
 }
 
@@ -194,6 +218,12 @@ function markFailed(memoryId, error, { requeue = true } = {}) {
     retry: item.retry_count,
     error: item.last_error,
   });
+  console.log(
+    `[SYNC] QUEUE_STATUS=${item.status} memory=${memoryId} error=${JSON.stringify(item.last_error)} (attempt ${item.retry_count})`
+  );
+  if (item.status === STATUS.PENDING) {
+    console.log(`[SYNC] RETRY_SCHEDULED memory=${memoryId} in=${Math.round(backoffMs(item.retry_count) / 1000)}s`);
+  }
   return item;
 }
 
@@ -258,6 +288,7 @@ module.exports = {
   counts,
   pendingCount,
   readyItems,
+  markSyncing,
   markSynced,
   markFailed,
   markConflict,

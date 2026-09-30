@@ -45,6 +45,8 @@ async function pushItem(item) {
       return { ok: true, dropped: true };
     }
     const payload = local.payload;
+    // §8 state machine: PENDING -> SYNCING before any cloud contact.
+    syncQueue.markSyncing(item.memory_id);
 
     // ---- duplicate/version check: what does the cloud already have? ----
     // The Qdrant point id IS memory_id, so an exact retrieve is enough.
@@ -55,8 +57,11 @@ async function pushItem(item) {
         with_payload: true,
       });
       cloud = Array.isArray(res) ? res[0] || null : null;
-    } catch {
-      cloud = null; // treat as absent; the push itself will surface real errors
+    } catch (e) {
+      // §9: never hide errors — surface them, then treat as absent (the
+      // verified push below will fail loudly if the cloud is truly broken).
+      console.log(`[SYNC] pre-check retrieve failed memory=${item.memory_id} error=${JSON.stringify(String(e.message || e).slice(0, 120))}`);
+      cloud = null;
     }
 
     if (cloud?.payload) {
@@ -64,9 +69,17 @@ async function pushItem(item) {
       const cloudVer = cloud.payload.version || 1;
       const localVer = payload.version || 1;
       if (cloudHash === payload.content_hash && cloudVer >= localVer) {
-        // cloud already has this exact content -> nothing to push
-        syncQueue.markSynced(item.memory_id);
-        return { ok: true, dedup: true };
+        // Cloud already has this exact content. §15: still verify the payload
+        // fields before trusting it — the point WAS retrieved from the
+        // expected collection, so this is a real cloud verification.
+        const mismatch = cloudVer === localVer ? memory.payloadMismatch(payload, cloud.payload) : null;
+        if (mismatch) {
+          console.log(`[SYNC] dedup pre-check mismatch memory=${item.memory_id}: ${mismatch} — re-pushing`);
+        } else {
+          console.log(`[SYNC] QUEUE_STATUS=SYNCED memory=${item.memory_id} (dedup: cloud record verified identical)`);
+          syncQueue.markSynced(item.memory_id);
+          return { ok: true, dedup: true };
+        }
       }
       if (cloudHash !== payload.content_hash && cloudVer >= localVer) {
         // divergence: cloud is same-or-newer with different content
@@ -101,12 +114,16 @@ async function pushItem(item) {
     }
 
     // ---- push local record to the cloud (pushPoint handles dim fit + naming) ----
+    // §15: SYNCED only after pushPoint PROVES the write (response ok + point
+    // retrieved back + payload fields matched). pushPoint returns verified=true
+    // only then; anything else must be a failure, never a silent success.
     const memoryService = require('./memory');
     const up = await memoryService.pushPoint(item.memory_id, local.vec, payload);
-    if (!up.ok) {
-      const permanent = /exceeds collection dim|not configured/i.test(up.error || '');
-      syncQueue.markFailed(item.memory_id, up.error || 'unknown push error', { requeue: !permanent });
-      return { ok: false, error: up.error, permanent };
+    if (!up.ok || !up.verified) {
+      const permanent =
+        up.permanent || /exceeds collection dim|not configured|dimension mismatch/i.test(up.error || '');
+      syncQueue.markFailed(item.memory_id, up.error || 'unverified push (no cloud confirmation)', { requeue: !permanent });
+      return { ok: false, error: up.error || 'unverified push', permanent };
     }
     syncQueue.markSynced(item.memory_id);
     return { ok: true };

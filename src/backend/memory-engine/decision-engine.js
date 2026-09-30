@@ -143,6 +143,21 @@ function decide(scores, candidate, duplicates = []) {
     };
   }
 
+  // Rule 4 — cross-device promotion. Cloud sync exists precisely so memories
+  // follow the user across devices: when the analyzer marks a memory as clearly
+  // valuable on other devices, the LOCAL_ONLY band should not trap it there.
+  // Promotion applies only above the TEMPORARY_LOCAL band (priority >= 50) —
+  // weak overall signals stay temporary/discarded even with a high
+  // cross_device_value. Security overrides (rules 1-2) already returned, so a
+  // promoted memory can never be sensitive.
+  if (priority >= 50 && priority < 75 && clamp(scores.cross_device_value) >= 75) {
+    return {
+      decision: DECISIONS.LOCAL_AND_CLOUD,
+      priority,
+      reason: `priority ${priority} in 50-74 band but cross_device_value ${clamp(scores.cross_device_value)} >= 75 — promoted to local + cloud`,
+    };
+  }
+
   // Rule 5 — priority bands.
   if (priority < 25) {
     return {

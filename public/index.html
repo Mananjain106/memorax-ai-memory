@@ -2,66 +2,230 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Memory Assistant</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="MemoraX — Your AI. Your Memory. Anywhere. Offline-first AI with intelligent memory." />
+  <title>MemoraX — Your AI. Your Memory. Anywhere.</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230e1117'/%3E%3Cpath d='M8 23V9l8 8 8-8v14' stroke='%235b8def' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="app">
-    <aside class="sidebar">
+  <div class="app" id="app">
+    <!-- ============ LEFT: sidebar ============ -->
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
         <span class="logo">◆</span>
-        <span>AI Memory Assistant</span>
-      </div>
-      <button id="new-chat" class="new-chat">＋ New chat</button>
-      <div class="mode-card">
-        <div class="mode-row">
-          <span class="dot" id="mode-dot"></span>
-          <span id="mode-label">DETECTING…</span>
+        <div class="brand-text">
+          <span class="brand-name">MemoraX</span>
+          <span class="brand-sub">Your AI. Your Memory. Anywhere.</span>
         </div>
-        <div class="mode-detail" id="mode-detail">checking connectivity…</div>
       </div>
-      <div class="sidebar-footer">
-        <div id="engine-info">engine: –</div>
-        <div id="memory-info">memory: –</div>
-        <button id="memory-toggle" class="memory-toggle">🧠 Memory browser</button>
+
+      <button id="new-chat" class="new-chat">
+        <span class="nc-plus">＋</span> New Chat
+      </button>
+
+      <div class="search-box">
+        <svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="chat-search" type="text" placeholder="Search chats" autocomplete="off" />
       </div>
+
+      <nav class="chat-history" id="chat-history"><!-- grouped by JS --></nav>
+
+      <div class="sidebar-foot">
+        <button id="open-settings" class="foot-btn" title="Settings">
+          <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>Settings</span>
+        </button>
+        <span class="foot-note" id="foot-engine-note">◆</span>
+      </div>
+      <button class="sidebar-scrim-btn" id="sidebar-close" aria-label="Close menu">✕</button>
     </aside>
 
+    <!-- ============ CENTER: conversation ============ -->
     <main class="chat">
       <header class="chat-header">
-        <span class="chat-title" id="chat-title">New chat</span>
-        <span class="badge" id="mode-badge">…</span>
+        <button class="icon-btn menu-btn" id="sidebar-open" aria-label="Open menu">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+        <div class="chat-title-wrap">
+          <span class="chat-title" id="chat-title">New chat</span>
+          <span class="chat-sub" id="chat-sub"></span>
+        </div>
+        <div class="header-actions">
+          <button class="icon-btn" id="panel-toggle" title="Conversation details">
+            <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+          </button>
+          <!-- Edge Memory status control (top-right) -->
+          <div class="edge-wrap" id="edge-wrap">
+            <button class="edge-pill" id="edge-pill" aria-haspopup="true">
+              <span class="pill-dot" id="net-dot"></span>
+              <span class="pill-net" id="net-label">Connecting…</span>
+              <span class="pill-sep"></span>
+              <span class="pill-edge">Edge Memory</span>
+              <svg class="ic chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <div class="edge-pop hidden" id="edge-pop">
+              <div class="pop-head">Edge Memory</div>
+              <div class="pop-row">
+                <span class="pop-label">Status</span>
+                <span class="pop-val"><span class="dot ok" id="pop-net-dot"></span> <span id="pop-net">—</span></span>
+              </div>
+              <div class="pop-row">
+                <span class="pop-label">Local memory</span>
+                <span class="pop-val"><span class="dot ok"></span> Active · <b id="pop-local-count">0</b> stored</span>
+              </div>
+              <div class="pop-sep"></div>
+              <div class="pop-mini">Cloud Sync</div>
+              <div class="pop-row">
+                <span class="pop-label">Qdrant Cloud</span>
+                <span class="pop-val" id="pop-cloud">—</span>
+              </div>
+              <div class="pop-row">
+                <span class="pop-label">Pending</span>
+                <span class="pop-val"><b id="pop-pending">0</b> memories</span>
+              </div>
+              <div class="pop-row">
+                <span class="pop-label">Last sync</span>
+                <span class="pop-val" id="pop-last-sync">—</span>
+              </div>
+              <div class="pop-note hidden" id="pop-offline-note">
+                Your memories will sync automatically when the connection returns.
+              </div>
+              <button class="pop-btn" id="open-activity">View Memory Activity</button>
+            </div>
+          </div>
+        </div>
       </header>
 
       <div class="messages" id="messages">
-        <div class="welcome">
-          <h1>AI Memory Assistant</h1>
-          <p>Works online via OpenRouter and fully offline via a local model.</p>
-          <p class="hint">The badge in the corner always shows the active mode.</p>
+        <!-- welcome / suggestions injected by app.js -->
+      </div>
+
+      <div class="composer-wrap">
+        <form class="composer" id="composer">
+          <textarea id="input" rows="1" placeholder="Message MemoraX..." autofocus></textarea>
+          <button type="submit" id="send" aria-label="Send message">
+            <svg class="ic" viewBox="0 0 24 24"><path d="m5 12 14-7-4 7 4 7z"/></svg>
+          </button>
+        </form>
+        <div class="composer-note" id="composer-note">
+          MemoraX remembers automatically. It runs online or fully offline.
         </div>
       </div>
-
-      <form class="composer" id="composer">
-        <textarea id="input" rows="1" placeholder="Message the assistant…" autofocus></textarea>
-        <button type="submit" id="send" aria-label="Send">➤</button>
-      </form>
     </main>
+
+    <!-- ============ RIGHT: contextual panel ============ -->
+    <aside class="rightpanel" id="rightpanel">
+      <div class="rp-head">
+        <span>Details</span>
+        <button class="icon-btn" id="panel-close" aria-label="Close panel">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="rp-scroll">
+        <section class="rp-card">
+          <div class="rp-title">Conversation Info</div>
+          <div class="kv"><span>Chat created</span><b id="rp-created">—</b></div>
+          <div class="kv"><span>Last activity</span><b id="rp-last">—</b></div>
+          <div class="kv"><span>Messages</span><b id="rp-msgs">0</b></div>
+        </section>
+        <section class="rp-card">
+          <div class="rp-title">Memory Activity</div>
+          <div class="rp-list" id="rp-memory"><!-- recent decisions --></div>
+        </section>
+        <section class="rp-card">
+          <div class="rp-title">Sync Activity</div>
+          <div class="rp-list" id="rp-sync"><!-- queue + conflicts --></div>
+        </section>
+      </div>
+    </aside>
   </div>
 
-  <div class="memory-panel hidden" id="memory-panel">
-    <div class="memory-panel-header">
-      <span>🧠 Stored memories</span>
-      <div class="memory-actions">
-        <button id="memory-sync" title="Push offline memories to Qdrant">⟳ Sync</button>
-        <button id="memory-clear" class="danger" title="Delete ALL memories">Clear all</button>
-        <button id="memory-close">✕</button>
+  <!-- ============ Memory Activity modal ============ -->
+  <div class="modal hidden" id="activity-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span class="modal-title">Memory Activity</span>
+        <button class="icon-btn" data-close="activity-modal" aria-label="Close">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-sub">Automatic decisions by the Memory Decision Engine — no manual saving needed.</div>
+      <div class="modal-body" id="activity-list"><!-- decision rows --></div>
+    </div>
+  </div>
+
+  <!-- ============ Settings modal ============ -->
+  <div class="modal hidden" id="settings-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span class="modal-title">Settings</span>
+        <button class="icon-btn" data-close="settings-modal" aria-label="Close">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body settings-body">
+        <div class="settings-brand">
+          <span class="logo">◆</span>
+          <div>
+            <div class="sb-name">MemoraX</div>
+            <div class="sb-tag">Offline-first AI with intelligent memory.</div>
+          </div>
+        </div>
+
+        <div class="set-group">
+          <label class="set-label" for="set-auto-open">Behaviour</label>
+          <label class="check-row">
+            <input type="checkbox" id="set-auto-open" />
+            <span>Open Edge Memory popover automatically on reconnect &amp; sync</span>
+        </label>
+          <label class="check-row">
+            <input type="checkbox" id="set-devmode" />
+            <span>Developer mode</span>
+          </label>
+        </div>
+
+        <div class="set-group dev-only hidden" id="dev-section">
+          <label class="set-label">Developer / Diagnostics</label>
+          <div class="dev-grid" id="dev-grid"><!-- health details --></div>
+          <div class="dev-actions">
+            <button class="mini-btn" id="dev-sync-now">Sync now (diagnostic)</button>
+            <button class="mini-btn" id="dev-memory-browser">Open memory browser</button>
+          </div>
+          <div class="dev-note">
+            Memory runs automatically: the Decision Engine stores, merges, or discards —
+            and cloud sync happens in the background. No manual action is needed.
+          </div>
+        </div>
+
+        <div class="set-foot">MemoraX · <span id="set-version">v0.3.0</span></div>
       </div>
     </div>
-    <div class="memory-stats" id="memory-stats">–</div>
-    <div class="memory-list" id="memory-list"></div>
   </div>
 
+  <!-- ============ Memory browser (developer) ============ -->
+  <div class="modal hidden" id="memory-modal">
+    <div class="modal-box wide">
+      <div class="modal-head">
+        <span class="modal-title">Stored memories (developer)</span>
+        <button class="icon-btn" data-close="memory-modal" aria-label="Close">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-sub" id="memory-stats">–</div>
+      <div class="modal-body">
+        <div class="memory-list" id="memory-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Toasts ============ -->
+  <div class="toasts" id="toasts"></div>
+
+  <!-- ============ Mobile drawer scrim ============ -->
+  <div class="scrim hidden" id="scrim"></div>
+
+  <script src="markdown.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -79,12 +79,14 @@ async function startOfflineServer(port) {
         }),
       })
     ).json();
-    // OpenRouter free tiers rate-limit often; falling back to the local model
-    // with ONLINE_DEGRADED is correct, working behavior — chat must answer.
+    // Strict routing: online = OpenRouter only. Provider failures (daily
+    // free-tier 429 included) return ONLINE_PROVIDER_ERROR — never a local
+    // LLM substitution. Memory extraction still runs either way (test 2).
     log(
-      '1. online chat works',
-      Boolean(chat1.content) && ['ONLINE', 'ONLINE_DEGRADED'].includes(chat1.mode),
-      `engine=${chat1.engine} mode=${chat1.mode} answer="${String(chat1.content).slice(0, 40)}"`
+      '1. online chat works (openrouter or strict provider error)',
+      (Boolean(chat1.content) && chat1.mode === 'ONLINE' && chat1.engine === 'openrouter') ||
+        (chat1.mode === 'ONLINE_PROVIDER_ERROR' && chat1.engine === 'openrouter'),
+      `engine=${chat1.engine} mode=${chat1.mode} answer="${String(chat1.content || chat1.error).slice(0, 40)}"`
     );
 
     // ============ 2. AUTOMATIC MEMORY CREATION ============

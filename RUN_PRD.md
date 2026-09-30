@@ -1,8 +1,8 @@
-# RUN PRD — Offline-First AI Memory Assistant
+# RUN PRD — MemoraX
 
 Product Requirements Document for **running** the system locally: prerequisites, configuration, run modes, verification, and operational behavior.
 
-- Product: `ai-memory-assistant` v0.2.0
+- Product: **MemoraX** — *Your AI. Your Memory. Anywhere.* (formerly `ai-memory-assistant`) v0.3.0
 - Stack: Node.js (CommonJS) + Express + transformers.js (ONNX, CPU) + Qdrant Cloud
 - Platforms: Windows, macOS, Linux (bash shells supported)
 
@@ -24,6 +24,35 @@ curl -s localhost:3000/health   # expect mode ONLINE, memory.vectorSize 384
 ```
 
 No internet? It still works — chat answers via local ONNX inference and memory recall uses the local vector store (first offline reply takes ~20–30 s to load the model, then ~1 s). Details: §2 Prerequisites, §3 Configuration, §4 Run modes, §5 Verification.
+
+---
+
+## 0. The MemoraX UI
+
+Three-part desktop layout (dark theme), responsive down to mobile.
+
+| Area | What lives there |
+|---|---|
+| **Left sidebar** | ◆ MemoraX brand, New Chat, Search chats, history grouped by Today / Yesterday / Previous 7 days / Older, per-chat ⋯ menu (Rename / Delete), Settings. Deleting a chat never deletes long-term memory. |
+| **Center** | Conversation title, streaming markdown answers (code blocks + Copy), message tools (Copy / Regenerate / Edit last message), composer (disabled **never** — offline shows "Message MemoraX offline..."). |
+| **Top-right** | `🟢 Online · Edge Memory ▾` pill → popover: local memory count, pending sync, cloud status, last sync, **View Memory Activity**. Status updates automatically (5 s poll); no manual mode switch exists. |
+| **Right panel** | Optional, collapsible: Conversation Info, Memory Activity (recent decisions), Sync Activity (synced / pending / conflicts). |
+
+### Automatic memory & sync (no user action required)
+
+- The Decision Engine runs on every message (fire-and-forget): DISCARD / TEMPORARY_LOCAL / LOCAL_ONLY / LOCAL_AND_CLOUD / MERGE / CONFLICT. The user never picks a destination. Band rule: priority ≥ 75 → LOCAL_AND_CLOUD; in the 50–74 band a `cross_device_value ≥ 75` promotes the memory to LOCAL_AND_CLOUD (cloud sync exists so memories follow the user across devices). Security overrides and duplicate/conflict handling always win over promotion.
+- Cloud-eligible memories enqueue automatically when the cloud is unreachable and drain via the background worker (30 s loop) once connectivity returns. The UI shows toasts: "Back online — syncing N memories..." → "N memories synced". There is no "Sync now" button (developer diagnostics only).
+- The queue is persistent (`data/sync-queue.json`), survives restarts and crashes (stuck SYNCING items are recovered to PENDING), and **never** holds sensitive LOCAL_ONLY memories — that gate is enforced on both the queue and the direct-push path.
+
+### Endpoints added for the UI
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/memory/edge-status[?deep=1]` | Aggregated popover payload: online, local counts, pending sync, cloud connected, open conflicts, lastSyncAt. `deep=1` pings Qdrant for a live check. |
+| `GET /api/memory/decisions?limit=N` | Decision audit trail (Memory Activity). |
+| `GET /api/sync/queue` · `GET /api/activity` · `GET /api/conflicts` | Queue counts/items, activity log, conflict records. |
+
+Developer/backend info (engine, collection, dims, diagnostic sync, memory browser) is hidden behind **Settings → Developer mode**.
 
 ---
 
@@ -183,7 +212,7 @@ Full suites: `npm test` (18), `node test/memory-engine.test.js` (24), `node test
 
 | Symptom | Cause | Action |
 |---|---|---|
-| `429 free-models-per-day` | OpenRouter free tier exhausted | app degrades to `ONLINE_DEGRADED`; wait for reset or switch key |
+| `429 free-models-per-day` | OpenRouter daily free-tier quota exhausted | typed `DAILY_QUOTA_EXHAUSTED` error surfaced to the user; NO automatic retry, NO local-LLM fallback while online; user-initiated Retry in the UI; breaker blocks further requests until the window elapses |
 | HTTP 400 on chat | model doesn't support `chat/completions` | pick a chat model for `OPENROUTER_MODEL` |
 | `ECONNREFUSED http://:80` | malformed `QDRANT_URL` (missing `https://`) | fix URL; app normalizes but keep it valid |
 | `embedding dim … exceeds collection dim` | embedding model swapped for a larger one | recreate collection (`node scripts/recreate-collection.js` pattern) |
