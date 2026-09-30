@@ -97,7 +97,7 @@ async function* localStream(messages) {
   const chunks = text.match(/\S+\s*/g) || [text];
   for (const chunk of chunks) {
     yield chunk;
-    await new Promise((r) => setTimeout(r, 35)); // natural pacing for the UI
+    await new Promise((r) => setTimeout(r, 10)); // light pacing, must not dominate latency
   }
 }
 

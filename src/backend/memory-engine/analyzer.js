@@ -142,6 +142,7 @@ function toThirdPerson(text) {
     [/^i\s+work\b/i, 'The user works'],
     [/^i\s+live\b/i, 'The user lives'],
     [/^i\s+use\b/i, 'The user uses'],
+    [/^i(?:'m| am)\s+using\b/i, 'The user is using'],
     [/^i(?:'m| am)\b/i, 'The user is'],
   ];
   for (const [re, rep] of subs) {
@@ -168,9 +169,23 @@ function heuristicAnalyze(message) {
 
   const pref = /\b(i (?:prefer|like|love|hate|favor|always|usually)|my favorite|call me|i'?m allergic)\b/i.test(m);
   const identity = /\b(my name is|i am \d+ years old|i work (?:as|at|on)|i live in)\b/i.test(m);
-  const project = /\b(project|codebase|repo|api|database|deploy|server|architecture)\b/i.test(lower);
+  const project = /\b(project|codebase|repo|api|database|deploy|server|architecture|building|working on|developing|platform|using)\b/i.test(lower);
   const task = /\b(today|tomorrow|tonight|later|remind me|need to|going to|will)\b/i.test(lower);
   const greeting = /^(hi|hello|hey|yo|good (morning|evening|afternoon)|thanks|thank you|ok(?:ay)?|sup)\b[\s!.?]*$/i.test(lower.trim());
+  // Social small talk ("Hello, how are you?", "how's it going?") is a question
+  // to the assistant, not a fact about the user — never a memory. Deliberately
+  // checked AFTER pref/identity/project so "hey, I'm building X" still stores.
+  const smallTalk =
+    /\b(how are you|how are things|how's it going|hows it going|what's up|whats up|nice to meet|pleasure to meet|good to see|talk to (?:you|soon)|see you later|goodbye)\b/i.test(m) ||
+    /^(hi|hello|hey|yo|sup|thanks|thank you|good (morning|afternoon|evening))\b(\s+(there|everyone|all|again|team))?\b[,!.\s]*$/i.test(m.trim());
+  // "hello, I prefer Vim" -> "I prefer Vim" (strip the social opener)
+  const stripGreet = (s) => s.replace(/^\s*(hi|hello|hey|yo|sup|good\s*(?:morning|afternoon|evening))\b[,!\s]*/i, '').trim() || s.trim();
+  // A question to the assistant ("What project am I building?") requests an
+  // answer from memory; it is not itself a fact about the user. Checked before
+  // topic matching so "what project ..." never matches the project branch.
+  const question =
+    /\?\s*$/.test(m.trim()) &&
+    /^(what|who|whom|whose|where|when|why|how|which|is|are|am|do|does|did|can|could|should|would|will|shall|may|have|has)\b/i.test(m.trim());
 
   let category = 'other';
   let extract = '';
@@ -183,27 +198,39 @@ function heuristicAnalyze(message) {
     scores.importance = 5;
     scores.future_usefulness = 2;
     scores.cross_device_value = 2;
+  } else if (question) {
+    category = 'other';
+    reason += 'question to the assistant, not a user fact';
+    scores.importance = 5;
+    scores.future_usefulness = 2;
+    scores.cross_device_value = 2;
   } else if (pref) {
     category = 'preference';
-    extract = toThirdPerson(m.trim());
+    extract = toThirdPerson(stripGreet(m.trim()));
     scores.importance = 70;
     scores.future_usefulness = 75;
     scores.cross_device_value = 70;
     reason += 'stated user preference';
   } else if (identity) {
     category = 'identity';
-    extract = toThirdPerson(m.trim());
+    extract = toThirdPerson(stripGreet(m.trim()));
     scores.importance = 80;
     scores.future_usefulness = 80;
     scores.cross_device_value = 85;
     reason += 'identity information';
   } else if (project) {
     category = 'project';
-    extract = toThirdPerson(m.trim());
+    extract = toThirdPerson(stripGreet(m.trim()));
     scores.importance = 65;
     scores.future_usefulness = 70;
     scores.cross_device_value = 60;
     reason += 'project-related detail';
+  } else if (smallTalk) {
+    category = 'greeting';
+    reason += 'social small talk, no long-term value';
+    scores.importance = 5;
+    scores.future_usefulness = 2;
+    scores.cross_device_value = 2;
   } else if (task) {
     category = 'task';
     extract = toThirdPerson(m.trim());
@@ -224,9 +251,7 @@ function heuristicAnalyze(message) {
   }
 
   return { ...scores, extract: sanitizeExtract(extract), temporary, category, reason, source: 'fallback' };
-}
-
-// Analyze with quality gate: if the LLM returns a non-standalone extract
+}// Analyze with quality gate: if the LLM returns a non-standalone extract
 // (first/second person), retry ONCE with a reminder before accepting.
 // HTTP/network errors (429s, timeouts) fall back IMMEDIATELY — retrying a
 // rate-limited provider just burns a minute before the heuristic kicks in.
@@ -236,7 +261,9 @@ async function analyzeMessage(message, { llmChat, maxAttempts = 2 } = {}) {
   }
 
   const isTransportError = (e) =>
-    /HTTP \d|fetch failed|timeout|abort|ECONN|ENOTFOUND|EAI_AGAIN|429|rate.?limit/i.test(String(e.message || e));
+    /HTTP \d|fetch failed|timeout|abort|ECONN|ENOTFOUND|EAI_AGAIN|429|rate.?limit|circuit breaker/i.test(
+      String(e.message || e)
+    );
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {

@@ -2,6 +2,20 @@
 // Tries the primary model, then any configured fallbacks (e.g. on 429).
 const config = require('../config');
 
+// Circuit breaker for the shared daily free-tier quota: once OpenRouter says
+// "free-models-per-day" exhausted, EVERY free model is dead, so retrying the
+// 3-model chain twice per chat message just burns seconds. Skip all calls
+// until a short cool-down elapses (cheap single probe afterwards).
+let quotaBreakerUntil = 0;
+
+function quotaExhausted(e) {
+  return /free-models-per-day/i.test(String(e && e.message));
+}
+
+function breakerOpen() {
+  return Date.now() < quotaBreakerUntil;
+}
+
 async function chatOnce(model, messages, { signal } = {}) {
   const res = await fetch(`${config.openrouter.baseUrl}/chat/completions`, {
     method: 'POST',
@@ -31,6 +45,12 @@ async function chatOnce(model, messages, { signal } = {}) {
 }
 
 async function chat(messages, { signal } = {}) {
+  if (breakerOpen()) {
+    const err = new Error('OpenRouter free-tier quota exhausted (circuit breaker open)');
+    err.status = 429;
+    err.quotaBreaker = true;
+    throw err;
+  }
   const models = [config.openrouter.model, ...config.openrouter.fallbackModels];
   let lastErr = null;
   for (const model of models) {
@@ -42,7 +62,10 @@ async function chat(messages, { signal } = {}) {
       if (e.status === 401 || e.status === 403) throw e;
       // Daily free-tier quota is a shared pool: the next free model is dead
       // too, so trying the fallbacks just wastes ~30s before giving up.
-      if (/free-models-per-day/i.test(e.message)) throw e;
+      if (quotaExhausted(e)) {
+        quotaBreakerUntil = Date.now() + 60_000; // probe again after 60s
+        throw e;
+      }
       console.warn(`[openrouter] model "${model}" failed (${e.message.slice(0, 120)}); trying next`);
     }
   }

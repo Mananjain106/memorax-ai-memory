@@ -194,19 +194,30 @@ function mergeText(oldText, newText) {
 // Content words only — stopwords carry no topic signal, so a raw message and
 // its normalized third-person extract ("The user ...") compare as the same
 // fact instead of "conflicting" over function words. Negation words are NOT
-// stopwords: they carry the contradiction signal.
+// stopwords: they carry the contradiction signal. A light stemmer folds
+// plural/inflection variants (memories->memory, using/uses->us) so dedup and
+// conflict checks compare concepts, not spellings.
 const STOPWORDS = new Set([
-  'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'to', 'of', 'and', 'or',
+  'a', 'an', 'am', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'to', 'of', 'and', 'or',
   'in', 'on', 'at', 'for', 'with', 'that', 'this', 'it', 'its', 'as', 'by', 'from',
   'user', 'users', 'my', 'i', 'their', 'his', 'her', 'has', 'have', 'had', 'do', 'does', 'did',
 ]);
+
+function stem(w) {
+  if (w.length <= 4) return w;
+  return w
+    .replace(/ies$/, 'y')
+    .replace(/(sses|shes|ches|xes|zes)$/, '')
+    .replace(/(ing|ed|es|s)$/, '');
+}
 
 function significantTokens(s) {
   return String(s)
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w && !STOPWORDS.has(w));
+    .filter((w) => w && !STOPWORDS.has(w))
+    .map(stem);
 }
 
 // Conflict detection: same topic, contradicting content. Deterministic and
@@ -231,12 +242,16 @@ function isConflicting(oldText, newText) {
   const bInA = b.every((w) => setA.has(w));
   if (aInB || bInA) return false;
 
-  // high overlap + differing key words + similar length -> contradiction
+  // high overlap + a couple of differing key words -> contradiction.
+  // The differing-word count is capped: swapping one predicate ("repaired" ->
+  // "damaged") is a contradiction, while two statements that merely share a
+  // topic ("building an Edge Memory Platform" vs "uses Qdrant Edge") are
+  // complementary facts, not conflicts.
   const common = a.filter((w) => setB.has(w)).length;
   const overlap = common / Math.max(a.length, b.length);
   const diffA = a.filter((w) => !setB.has(w)).length;
   const diffB = b.filter((w) => !setA.has(w)).length;
-  if (overlap >= 0.5 && diffA >= 1 && diffB >= 1 && Math.abs(a.length - b.length) <= 2) {
+  if (overlap >= 0.5 && diffA >= 1 && diffA <= 2 && diffB >= 1 && diffB <= 2 && Math.abs(a.length - b.length) <= 2) {
     return true;
   }
   return false;

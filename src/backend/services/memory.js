@@ -151,14 +151,14 @@ async function remember(text, metadata = {}, { cloudAllowed = true, record: prov
     //    persistent queue holds it for automatic catch-up with backoff.
     //    Sensitive memories never enqueue — the queue itself enforces this.
     if (!cloudAllowed) {
-      return { ok: true, id, record, qdrant: { ok: true, skipped: true, queued: false } };
+      return { ok: true, id, record, dims: vec.length, qdrant: { ok: true, skipped: true, queued: false } };
     }
     const qdrant = await pushPoint(id, vec, payload);
     if (!qdrant.ok) {
       const q = syncQueue.enqueue(id, 'UPSERT', { payload, priority: payload.priority_score });
-      return { ok: true, id, record, qdrant: { ok: false, queued: q.ok, reason: q.reason }, queued: q.ok };
+      return { ok: true, id, record, dims: vec.length, qdrant: { ok: false, queued: q.ok, reason: q.reason }, queued: q.ok };
     }
-    return { ok: true, id, record, qdrant, queued: false };
+    return { ok: true, id, record, dims: vec.length, qdrant, queued: false };
   } catch (e) {
     memoryDisabledReason = e.message;
     return { ok: false, error: e.message };
