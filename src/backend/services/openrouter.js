@@ -20,10 +20,19 @@ let quotaBreakerUntil = 0;
 const ERROR_TYPES = {
   DAILY_QUOTA_EXHAUSTED: 'DAILY_QUOTA_EXHAUSTED',
   RATE_LIMITED: 'RATE_LIMITED',
+  MODEL_RATE_LIMITED: 'MODEL_RATE_LIMITED',
 };
 
 function quotaExhausted(e) {
   return /free-models-per-day|daily quota|quota exhausted/i.test(String(e && e.message));
+}
+
+// Per-MODEL upstream limit ("<model> is temporarily rate-limited upstream"):
+// that one model is busy, but other free models have separate limits. Unlike
+// the daily quota (shared pool) this does NOT open the quota breaker — the
+// model chain may continue with the next model.
+function modelRateLimited(e) {
+  return /temporarily rate-limited/i.test(String(e && e.message));
 }
 
 function breakerOpen() {
@@ -51,6 +60,9 @@ function classifyError(e) {
   if (status === 429 && quotaExhausted(err)) {
     error_type = ERROR_TYPES.DAILY_QUOTA_EXHAUSTED;
     retryable = false; // automatic retry is meaningless until the daily reset
+  } else if (status === 429 && modelRateLimited(err)) {
+    error_type = ERROR_TYPES.MODEL_RATE_LIMITED;
+    retryable = true; // this model is busy; another model (or a later retry) may work
   } else if (status === 429) {
     error_type = ERROR_TYPES.RATE_LIMITED;
     retryable = true; // short-term limit: a user-prompted retry is allowed
@@ -162,9 +174,16 @@ async function chat(messages, { signal } = {}) {
         noteQuotaExhausted({ windowMs: e.retryAfterSec ? e.retryAfterSec * 1000 : QUOTA_BREAKER_MS });
         throw lastErr;
       }
-      // Short-term 429: stop the chain too — fallbacks would just multiply
-      // rate-limited requests for one user message.
+      // Short-term shared-pool 429: stop the chain too — fallbacks would just
+      // multiply rate-limited requests for one user message.
       if (lastErr.error_type === ERROR_TYPES.RATE_LIMITED) throw lastErr;
+      // Per-model upstream limit: THIS model is busy, others are not — the
+      // chain continues to the next model (no breaker, no user-visible error
+      // unless every model in the chain is busy).
+      if (lastErr.error_type === ERROR_TYPES.MODEL_RATE_LIMITED) {
+        console.warn(`[openrouter] model "${model}" temporarily rate-limited upstream; trying next`);
+        continue;
+      }
       console.warn(`[openrouter] model "${model}" failed (${String(e.message).slice(0, 120)}); trying next`);
     }
   }
@@ -176,6 +195,7 @@ module.exports = {
   breakerOpen,
   noteQuotaExhausted,
   quotaExhausted,
+  modelRateLimited,
   classifyError,
   ERROR_TYPES,
 };

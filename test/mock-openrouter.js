@@ -10,7 +10,7 @@
 //     qwentool    -> 200 but content leaks Qwen-style tool-call markup
 //                    (<|tool_call_start|>[query(prompt='...',note='...')]<|tool_call_end|>)
 //     qwentooljson-> 200 but delta carries tool_calls + markup split across deltas
-//   GET /stats  -> { requests, fourTwentyNines, oks, mode }
+//   GET /stats  -> { requests, chatRequests, analyzerRequests, fourTwentyNines, oks, mode }
 //
 // Logs one line per request so upstream request counts per user message can be
 // asserted exactly (no hidden retry loops).
@@ -71,7 +71,7 @@ const server = http.createServer((req, res) => {
       state.lastBodyHasTools = null;
     }
     const recovering = state.mode === 'recover' && state.afterSec && Date.now() - state.modeSetAt > state.afterSec * 1000;
-    const wantOk = ['ok', 'qwentool', 'qwentooljson'].includes(state.mode) || recovering;
+    const wantOk = ['ok', 'qwentool', 'qwentooljson', 'permodel'].includes(state.mode) || recovering;
     // The memory pipeline's analyzer asks for "ONLY a JSON object"; a real
     // Qwen answers it with JSON (not tool markup), so honor that: in the
     // leak modes, analyzer-shaped prompts always get the plain JSON answer.
@@ -79,6 +79,19 @@ const server = http.createServer((req, res) => {
     const isAnalyzerPrompt = raw.includes('ONLY a JSON object');
     if (isAnalyzerPrompt) state.analyzerRequests++;
     else state.chatRequests++;
+    // permodel: the PRIMARY model is "temporarily rate-limited upstream"
+    // (per-model limit) but every OTHER model answers normally — proves the
+    // chain continues on MODEL_RATE_LIMITED instead of erroring the user.
+    if (state.mode === 'permodel' && !isAnalyzerPrompt) {
+      const fallbackHit = /fallback|gemma|liquid/i.test(reqModel);
+      if (!fallbackHit) {
+        state.fourTwentyNines++;
+        console.log(`[canary] request #${state.requests} model=${reqModel} -> 429 temporarily rate-limited upstream (permodel)`);
+        return body(res, 429, {
+          error: { code: 429, message: `Provider returned error: ${reqModel} is temporarily rate-limited upstream. Please try again later.` },
+        });
+      }
+    }
     const leakMode = state.mode === 'qwentool' || (state.mode === 'qwentooljson' && !isAnalyzerPrompt);
     if (wantOk && leakMode) {
       // Qwen tool-call leak simulation. The visible answer either starts with

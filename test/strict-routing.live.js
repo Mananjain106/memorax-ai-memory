@@ -144,6 +144,19 @@ function check(name, cond, detail = '') {
   c = await chat(BASE, 'hello canary retry'); // the UI "Retry" button = a new request
   check('T5b user retry after recovery succeeds', c.mode === 'ONLINE' && c.engine === 'openrouter' && Boolean(c.content), `mode=${c.mode} answer="${String(c.content).slice(0, 40)}"`);
 
+  // ---------- TEST 6: per-model 429 continues the chain ----------
+  console.log('\n===== TEST 6: per-model upstream limit -> chain continues to fallback =====');
+  await canaryMode('permodel');
+  const s10 = await canaryStats();
+  c = await chat(BASE, 'hello permodel chain');
+  const s11 = await canaryStats();
+  check('T6 answer succeeded via fallback model (no user error)', c.mode === 'ONLINE' && c.engine === 'openrouter' && Boolean(c.content), `mode=${c.mode} answer="${String(c.content).slice(0, 30)}"`);
+  check('T6 primary 429 then fallback 200 (2 chat requests)', s11.chatRequests - s10.chatRequests === 2, `chatDelta=${s11.chatRequests - s10.chatRequests}`);
+  check('T6 breaker NOT opened (no daily-quota signal)', c.error_type === undefined, `error_type=${c.error_type || 'none'}`);
+  // A follow-up message must still flow (no breaker open, no sticky error).
+  c = await chat(BASE, 'hello permodel again');
+  check('T6 follow-up message unaffected', c.mode === 'ONLINE' && Boolean(c.content), `mode=${c.mode}`);
+
   // ---------- summary ----------
   const fails = results.filter((r) => !r.pass);
   console.log(`\n=== ${results.length - fails.length}/${results.length} strict-routing checks passed ===`);

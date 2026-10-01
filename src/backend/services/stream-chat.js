@@ -225,6 +225,12 @@ async function streamChat(messages, res) {
           // may retry manually after the server-provided Retry-After.
           break;
         }
+        if (typed.error_type === ERROR_TYPES.MODEL_RATE_LIMITED) {
+          // Per-model upstream limit: THIS model is busy, the others are not.
+          // Continue the chain to the next model (no breaker, no error yet).
+          console.warn(`[stream] model "${model}" temporarily rate-limited upstream; trying next`);
+          continue;
+        }
         if (typed.error_type === 'AUTH_ERROR') break; // auth fails for every model
         if (anyDelta) {
           // Mid-stream failure: model already partially answered, cannot restart.
@@ -248,6 +254,13 @@ async function streamChat(messages, res) {
       emitProviderError(`OpenRouter is rate-limited right now.${wait}`, {
         lastUser,
         error_type: ERROR_TYPES.RATE_LIMITED,
+      });
+    } else if (lastErr && lastErr.error_type === ERROR_TYPES.MODEL_RATE_LIMITED) {
+      // Every model in the chain was individually busy — the shared pool is
+      // fine. A user-initiated retry may succeed at any moment.
+      emitProviderError('All OpenRouter models in your chain are busy right now. Please try again in a moment.', {
+        lastUser,
+        error_type: ERROR_TYPES.MODEL_RATE_LIMITED,
       });
     } else {
       emitProviderError(

@@ -178,7 +178,9 @@ async function chat(userMessages) {
         ? 'OpenRouter is temporarily unavailable because the daily free-model quota has been reached. Please try again later.'
         : typed.error_type === 'RATE_LIMITED'
           ? `OpenRouter is rate-limited right now.${e.retryAfterSec ? ` Try again in ~${e.retryAfterSec}s.` : ' Please try again shortly.'}`
-          : `OpenRouter is temporarily unavailable: ${msg.slice(0, 180)}.`;
+          : typed.error_type === 'MODEL_RATE_LIMITED'
+            ? 'All OpenRouter models in your chain are busy right now. Please try again in a moment.'
+            : `OpenRouter is temporarily unavailable: ${msg.slice(0, 180)}.`;
     return {
       error: friendly,
       engine: 'openrouter',
