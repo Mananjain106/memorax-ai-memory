@@ -4,6 +4,8 @@
 
 MemoraX is an offline-first AI memory assistant. It chats with you through a web UI, extracts long-term memories from what you say (like ChatGPT memory), and keeps them in a local vector store that syncs to Qdrant Cloud when a connection is available — your memory works **anywhere**, online or offline.
 
+> 📐 **Architecture:** [ARCHITECTURE.md](ARCHITECTURE.md) · 🤖 **Models:** [MODEL.md](MODEL.md)
+
 ## How it works
 
 ```
@@ -45,10 +47,21 @@ npm start              # http://localhost:3000
 Sanity check:
 
 ```bash
-curl -s localhost:3000/health   # expect mode ONLINE, memory.vectorSize 384
+curl -s localhost:3000/health   # expect ok:true, mode ONLINE, memory.vectorSize 384
+curl -s localhost:3000/status   # connectivity probe reason
 ```
 
 No internet? It still works — chat answers via local ONNX inference and memory recall uses the local vector store (first offline reply takes ~20–30 s to load the model, then ~1 s).
+
+## Prerequisites
+
+| Requirement | Minimum | Notes |
+|---|---|---|
+| Node.js | 20 (tested on 24) | `node -v` |
+| npm | 10+ | ships with Node |
+| RAM | 8 GB (16 GB comfortable) | local LLM peak ~1.5–2 GB |
+| Disk | ~1.5 GB | `models/` cache ≈ 1 GB, `node_modules/` ≈ 300 MB |
+| Network | only for first model download + ONLINE mode | after `prefetch`, offline is fully self-contained |
 
 ## Configuration (`.env`)
 
@@ -62,10 +75,62 @@ No internet? It still works — chat answers via local ONNX inference and memory
 | `OPENROUTER_FALLBACK_MODELS` | comma-separated | tried in order (per-model busy limits skip to the next) |
 | `LOCAL_LLM_RUNTIME` | `transformers` | or `ollama` |
 | `LOCAL_LLM_MODEL` | `Xenova/LaMini-Flan-T5-783M` | local inference model |
+| `LOCAL_LLM_MAX_TOKENS` | `256` | generation cap |
+| `LOCAL_LLM_URL` | `http://localhost:11434` | Ollama only |
 | `PORT` | `3000` | HTTP port |
 | `FORCE_OFFLINE` | `1` | force OFFLINE routing (tests; inference stays real) |
+| `QUOTA_BREAKER_MS` | `60000` | quota-breaker window after a daily-quota 429 (capped 24 h) |
 
 `.env` is gitignored — never commit it. Embeddings use `Xenova/all-MiniLM-L6-v2` (384-dim).
+
+## Running
+
+```bash
+npm start                # production-ish: UI + API on :3000
+npm run dev              # node --watch (auto-restart on change)
+FORCE_OFFLINE=1 npm start  # deliberate offline run (real local inference)
+```
+
+Background start (bash on Windows):
+
+```bash
+(nohup node server.js > server.log 2>&1 & echo $! > server.pid)
+# stop: taskkill //F //PID $(cat server.pid)
+```
+
+Exercise the product loop:
+
+1. **Chat online** — `POST /api/chat` `{"messages":[{"role":"user","content":"Hi"}]}` → `mode:"ONLINE"`.
+2. **Streaming** — `POST /api/chat/stream` → SSE `meta` → `delta*` → `done`.
+3. **Memory** — `POST /api/memory/remember` then `GET /api/memory/recall?q=…`.
+4. **Offline drill** — `FORCE_OFFLINE=1`, repeat → `mode:"OFFLINE"`, `engine:"local"`, recall `source:"local"`.
+5. **Sync queue** — a memory created offline shows `PENDING` in `/api/sync/queue`, then `SYNCED` after reconnect (automatic).
+
+## Data & logs
+
+| Path | Contents |
+|---|---|
+| `data/local-memory.json` | local vector store (384-dim, full payloads) |
+| `data/sync-queue.json` | persistent sync queue (survives restarts) |
+| `data/activity.jsonl` | append-only lifecycle event log |
+| `data/conflicts.json` | memory conflict records |
+| `data/memory-decisions.jsonl` | per-decision audit trail |
+| `data/device-id` | stable device identity |
+| `models/` | cached ONNX models (gitignored) |
+| `server.log` / `server.pid` | background-run artifacts |
+
+## Troubleshooting
+
+| Symptom | Cause | Action |
+|---|---|---|
+| `429 free-models-per-day` | daily free-tier quota exhausted | typed error + breaker; no auto retry, no local fallback while online; use the UI Retry after the window |
+| `<model> is temporarily rate-limited upstream` | that one model is busy | automatic — the chain continues to the next model |
+| raw tool-call markup in an answer | Qwen-family chat-template artifact | filtered server-side (both stream paths); verify with `bash test/run-sanitizer.sh` |
+| HTTP 400 on chat | model lacks `chat/completions` | pick a chat model for `OPENROUTER_MODEL` |
+| `ECONNREFUSED http://:80` | malformed `QDRANT_URL` | include `https://` |
+| `embedding dim … exceeds collection dim` | embedding model swapped | rebuild collection (`node scripts/recreate-collection.js`) |
+| First offline answer slow | model load on CPU | expected (~20–30 s once per process), then ~1 s |
+| Zombie dev server holds :3000 | previous unclean exit | `taskkill //F //PID <pid>` |
 
 ## Testing
 
@@ -79,7 +144,7 @@ bash test/run-strict-routing.sh     # routing/429 semantics vs. a mock canary (2
 bash test/run-sanitizer.sh          # tool-call markup filtering E2E (14)
 ```
 
-The canary suites run against a mock OpenRouter server — no real quota consumed.
+The canary suites run against a mock OpenRouter server — no real quota consumed. Note: lifecycle/offline-retrieval suites wipe the live Qdrant collection via `/api/memory/clear`.
 
 ## Tech stack
 
@@ -94,13 +159,6 @@ src/backend/memory-engine/    decision engine, analyzer, embeddings, pipeline
 public/                       UI (app.js, markdown.js, style.css)
 test/                         unit + live suites + mock OpenRouter canary
 scripts/                      prefetch, cloud verification, collection tools
-RUN_PRD.md                    full operational runbook (config, runbook, scripts)
 ```
 
-## Operational notes
-
-- **Daily free-tier quota exhausted** → typed `DAILY_QUOTA_EXHAUSTED` error, circuit breaker blocks requests until the window elapses; no automatic retry, no local fallback.
-- **One model busy** (`temporarily rate-limited upstream`) → the fallback chain continues automatically to the next model.
-- Raw model tool-call markup is filtered server-side in both streaming and non-streaming paths; if a response becomes empty after filtering, a retryable provider error is shown instead.
-
-See [RUN_PRD.md](RUN_PRD.md) for the complete runbook.
+Deep dives: [ARCHITECTURE.md](ARCHITECTURE.md) (modules, routing, memory pipeline, sync, error taxonomy) · [MODEL.md](MODEL.md) (model selection, local models, quotas, sanitizer).
