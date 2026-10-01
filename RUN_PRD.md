@@ -213,6 +213,7 @@ Full suites: `npm test` (18), `node test/memory-engine.test.js` (24), `node test
 | Symptom | Cause | Action |
 |---|---|---|
 | `429 free-models-per-day` | OpenRouter daily free-tier quota exhausted | typed `DAILY_QUOTA_EXHAUSTED` error surfaced to the user; NO automatic retry, NO local-LLM fallback while online; user-initiated Retry in the UI; breaker blocks further requests until the window elapses |
+| raw tool-call markup in an answer (e.g. `<\|tool_call_start\|>[query(...)]<\|tool_call_end\|>`, stray `<\|im_end\|>`, bare `query(...)` / JSON tool payloads) | Qwen-family chat templates sometimes emit tool-call tokens although MemoraX sends NO `tools`/`tool_choice` and defines no tools | filtered server-side by the shared sanitizer (`src/backend/services/sanitize.js`) in BOTH the non-stream (`openrouter.chat`) and streaming (`openRouterStream`) paths — including markers split across SSE deltas and streamed `delta.tool_calls` (ignored, never yielded). If a response becomes empty after filtering, a typed retryable provider error is shown instead. Verify with `bash test/run-sanitizer.sh` (14 checks; canary modes `qwentool` / `qwentooljson`) |
 | HTTP 400 on chat | model doesn't support `chat/completions` | pick a chat model for `OPENROUTER_MODEL` |
 | `ECONNREFUSED http://:80` | malformed `QDRANT_URL` (missing `https://`) | fix URL; app normalizes but keep it valid |
 | `embedding dim … exceeds collection dim` | embedding model swapped for a larger one | recreate collection (`node scripts/recreate-collection.js` pattern) |

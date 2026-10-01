@@ -3,6 +3,7 @@
 // availability problem, never an offline signal — the caller surfaces an error
 // and the user decides. The local LLM is NEVER a fallback while online.
 const config = require('../config');
+const { sanitizeText } = require('./sanitize');
 
 // Circuit breaker for the shared daily free-tier quota: once OpenRouter says
 // "free-models-per-day" exhausted, EVERY free model is dead. All further
@@ -101,11 +102,30 @@ async function chatOnce(model, messages, { signal } = {}) {
   }
 
   const data = await res.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error(`OpenRouter returned no content: ${JSON.stringify(data).slice(0, 300)}`);
+  // Parse the NORMAL assistant content field. Some providers return content
+  // as an array of typed parts — join the text parts.
+  const msg = data.choices?.[0]?.message;
+  const content =
+    typeof msg?.content === 'string'
+      ? msg.content
+      : Array.isArray(msg?.content)
+        ? msg.content.map((p) => (p && typeof p.text === 'string' ? p.text : '')).join('')
+        : '';
+  if (msg?.tool_calls?.length) {
+    // The model returned tool-call data although we send no tools/tool_choice
+    // and define no tools. NEVER surface the raw payload — log the fact only.
+    console.log(`[OPENROUTER] tool_call_output_ignored model=${model} count=${msg.tool_calls.length}`);
   }
-  return { content, model: data.model || model, provider: 'openrouter' };
+  // Strip tool-call markup that leaked INTO the content (Qwen-family chat
+  // templates sometimes emit it unprompted). Result may be ''.
+  const clean = sanitizeText(content);
+  if (!clean) {
+    // Generic message ONLY — the raw body can contain tool-call payloads that
+    // must never reach the UI. The body is not echoed anywhere user-visible.
+    console.log(`[OPENROUTER] empty/filtered content model=${model}`);
+    throw new Error('OpenRouter returned no assistant content (possible tool-call output was filtered)');
+  }
+  return { content: clean, model: data.model || model, provider: 'openrouter' };
 }
 
 async function chat(messages, { signal } = {}) {

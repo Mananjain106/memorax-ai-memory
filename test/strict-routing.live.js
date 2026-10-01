@@ -75,6 +75,15 @@ function check(name, cond, detail = '') {
   const s1 = await canaryStats();
   check('T1 OpenRouter answered (no local fallback)', c.mode === 'ONLINE' && c.engine === 'openrouter' && Boolean(c.content), `mode=${c.mode} engine=${c.engine} answer="${String(c.content).slice(0, 30)}"`);
   check('T1 exactly 1 provider request for 1 user message', s1.requests - s0.requests === 1, `requests=${s1.requests - s0.requests}`);
+  // The fire-and-forget memory-analyzer request lands at the canary shortly
+  // AFTER the chat response. Wait for it so it cannot cross into TEST 2's
+  // 429 window (a late analyzer 429 would open the quota breaker early and
+  // make T2 see zero provider requests).
+  for (let i = 0; i < 24; i++) {
+    const sq = await canaryStats();
+    if (sq.requests > s1.requests) break;
+    await sleep(250);
+  }
 
   // ---------- TEST 2: daily quota 429 ----------
   console.log('\n===== TEST 2: ONLINE + OpenRouter daily quota 429 =====');

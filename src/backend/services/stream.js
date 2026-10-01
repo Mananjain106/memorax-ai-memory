@@ -3,6 +3,7 @@
 //   delta {text}                            -> incremental answer tokens
 //   done  {model, engine, mode}             -> final event, closes the stream
 //   error {message}                         -> terminal failure
+const { createStreamSanitizer } = require('./sanitize');
 function sse(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
@@ -51,15 +52,42 @@ async function* openRouterStream(model, messages, { signal } = {}) {
     }
     throw err;
   }
-  for await (const data of sseLines(res.body)) {
-    if (data === '[DONE]') return;
-    try {
-      const json = JSON.parse(data);
-      const delta = json.choices?.[0]?.delta?.content;
-      if (delta) yield delta;
-    } catch {
-      // ignore keep-alive / comment fragments
+  // Streaming sanitizer: drops tool-call markup (e.g. Qwen's
+  // <|tool_call_start|>...<|tool_call_end|> or <tool_call>...</tool_call>)
+  // and stray special tokens from the deltas BEFORE they reach the UI. It
+  // holds back a few chars so markers split across deltas are still caught.
+  const sanitizer = createStreamSanitizer();
+  const partText = (d) =>
+    typeof d === 'string'
+      ? d
+      : Array.isArray(d)
+        ? d.map((p) => (p && typeof p.text === 'string' ? p.text : '')).join('')
+        : '';
+  try {
+    for await (const data of sseLines(res.body)) {
+      if (data === '[DONE]') break;
+      try {
+        const json = JSON.parse(data);
+        const choice = json.choices?.[0];
+        // A delta carrying tool_calls means the model tried to call a tool.
+        // We send no tools and define none — ignore the payload entirely and
+        // keep reading for a normal content answer. NEVER yield it.
+        if (choice?.delta?.tool_calls?.length) {
+          console.log(`[OPENROUTER] tool_call_output_ignored model=${model} (stream)`);
+          continue;
+        }
+        const delta = partText(choice?.delta?.content);
+        if (delta) {
+          const clean = sanitizer.push(delta);
+          if (clean) yield clean;
+        }
+      } catch {
+        // ignore keep-alive / comment fragments
+      }
     }
+  } finally {
+    const tail = sanitizer.flush();
+    if (tail) yield tail;
   }
 }
 

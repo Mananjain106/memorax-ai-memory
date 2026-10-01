@@ -257,9 +257,45 @@ async function testOffline() {
   }
 }
 
+// Sanitizer unit checks: Qwen-style tool-call markup must never reach the UI,
+// while Markdown/code and normal prose pass through untouched.
+async function testSanitizer() {
+  const { sanitizeText, createStreamSanitizer } = require('../src/backend/services/sanitize');
+  const A = '<|' + 'tool_call_start' + '|>';
+  const B = '<|' + 'tool_call_end' + '|>';
+  const IM = '<|' + 'im_start' + '|>';
+  const call = "[query(prompt='What project am I building?', note='track')]";
+  const cases = [
+    ['pipe block dropped', sanitizeText(A + call + B), ''],
+    ['block stripped around prose', sanitizeText('Sure!' + A + call + B + 'Here you go'), 'Sure!Here you go'],
+    ['stray special token dropped', sanitizeText('Hi ' + IM + ' there'), 'Hi  there'],
+    ['bare query() array dropped', sanitizeText(call), ''],
+    ['bare query() list dropped', sanitizeText("[query(prompt='a'), query(prompt='b')]"), ''],
+    ['JSON tool-call payload dropped', sanitizeText('{"name":"query","arguments":{"prompt":"x"}}'), ''],
+    ['markdown/code preserved', sanitizeText('# Hi\n\n```js\nconst a=[1,2];\n```'), '# Hi\n\n```js\nconst a=[1,2];\n```'],
+    ['plain answer untouched', sanitizeText('Just a normal answer.'), 'Just a normal answer.'],
+  ];
+  for (const [name, got, want] of cases) log('sanitizer: ' + name, got === want, `got=${JSON.stringify(String(got).slice(0, 40))}`);
+
+  // Streaming: markers split across char-by-char deltas must still be caught.
+  const s = createStreamSanitizer();
+  let acc = '';
+  for (const ch of 'Answer:' + A + call + B + ' done') acc += s.push(ch);
+  log('sanitizer: stream split-marker filtered', acc + s.flush() === 'Answer: done', JSON.stringify(acc));
+  const s2 = createStreamSanitizer();
+  let acc2 = '';
+  for (const ch of A + call + B) acc2 += s2.push(ch);
+  log('sanitizer: stream tool-only message -> empty', acc2 + s2.flush() === '', JSON.stringify(acc2));
+  const s3 = createStreamSanitizer();
+  let acc3 = '';
+  for (const ch of 'ok' + A + '[query(') acc3 += s3.push(ch);
+  log('sanitizer: stream ends mid-block', acc3 + s3.flush() === 'ok', JSON.stringify(acc3));
+}
+
 (async () => {
   let failed = false;
   try {
+    await testSanitizer();
     await testOnline();
     await testOffline();
   } catch (e) {
