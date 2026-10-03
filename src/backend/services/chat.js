@@ -3,7 +3,7 @@
 // OFFLINE -> local LLM (real inference, never cached answers)
 const { detectMode } = require('../connectivity');
 const openrouter = require('./openrouter');
-const { chatLocal, localRuntimeLabel } = require('./local-llm');
+const { chatLocal, localRuntimeLabel, offlineRecall, buildLocalSystemPrompt } = require('./local-llm');
 const memory = require('./memory');
 const pipeline = require('../memory-engine/pipeline');
 const perf = require('./perf');
@@ -85,20 +85,15 @@ async function chat(userMessages) {
     // Recall is capped (top-K + relevance floor in memory.recall) so weakly
     // related memories never pollute the prompt.
     const recallP = lastUser
-      ? memory.recallLocalOnly(lastUser.content, 5, { minRelevance: 0.15 })
+      ? offlineRecall(lastUser.content)
       : Promise.resolve([]);
     const recalled = await Promise.race([recallP, new Promise((r) => setTimeout(() => r([]), 2500))]);
     console.log(`[CHAT] MEMORY SEARCH ${Date.now() - tM}ms (local)`);
     p.lap('memory search');
-    const augmented = [...userMessages];
-    if (lastUser && recalled.length) {
-      const memCtx = recalled.map((r) => `- ${r.text}`).join('\n');
-      const idx = augmented.map((m) => m.role).lastIndexOf('user');
-      augmented[idx] = {
-        role: 'user',
-        content: `${lastUser.content}\n\n(Things you remember about the user:\n${memCtx}\nUse them if relevant.)`,
-      };
-    }
+    const augmented = [
+      { role: 'system', content: buildLocalSystemPrompt(recalled) },
+      ...userMessages,
+    ];
     p.lap('prompt construction');
     const tL = Date.now();
     const content = await chatLocal(augmented);

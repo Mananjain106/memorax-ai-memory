@@ -4,6 +4,7 @@ const config = require('../config');
 const memory = require('./memory');
 const pipeline = require('../memory-engine/pipeline');
 const { sse, openRouterStream, localStream } = require('./stream');
+const { offlineRecall, buildLocalSystemPrompt } = require('./local-llm');
 const openrouter = require('./openrouter');
 const { ERROR_TYPES } = require('./openrouter');
 const perf = require('./perf');
@@ -117,19 +118,14 @@ async function streamChat(messages, res) {
       const lastUser = [...messages].reverse().find((m) => m.role === 'user');
       const tM = Date.now();
       const recalled = lastUser
-        ? await memory.recallLocalOnly(lastUser.content, 5, { minRelevance: 0.15 })
+        ? await offlineRecall(lastUser.content)
         : [];
       console.log(`[CHAT] MEMORY SEARCH ${Date.now() - tM}ms (local)`);
       p.lap('memory search');
-      const augmented = [...messages];
-      if (lastUser && recalled.length) {
-        const memCtx = recalled.map((r) => `- ${r.text}`).join('\n');
-        const idx = augmented.map((m) => m.role).lastIndexOf('user');
-        augmented[idx] = {
-          role: 'user',
-          content: `${lastUser.content}\n\n(Things you remember about the user:\n${memCtx}\nUse them if relevant.)`,
-        };
-      }
+      const augmented = [
+        { role: 'system', content: buildLocalSystemPrompt(recalled) },
+        ...messages,
+      ];
       emitMeta('local', config.local.model, { memories: recalled });
       const tL = Date.now();
       let answer = '';
